@@ -102,6 +102,7 @@ async def test_twilio_validation_rejects_unowned_number():
         }
     )
     provider._lookup_incoming_number_sid = AsyncMock(return_value=None)
+    provider._is_verified_caller_id = AsyncMock(return_value=False)
 
     result = await provider.validate_phone_number("+15551230002")
 

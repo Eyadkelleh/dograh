@@ -445,6 +445,13 @@ class TwilioProvider(TelephonyProvider):
             )
             return ProviderSyncResult(ok=True)
 
+        if not sid and await self._is_verified_caller_id(e164):
+            logger.info(
+                f"Twilio number {e164} is a verified caller ID on account "
+                f"{self.account_sid}; skipping inbound webhook configuration"
+            )
+            return ProviderSyncResult(ok=True)
+
         if not sid:
             return ProviderSyncResult(
                 ok=False,
@@ -489,7 +496,7 @@ class TwilioProvider(TelephonyProvider):
         return ProviderSyncResult(ok=True)
 
     async def validate_phone_number(self, address: str) -> ProviderSyncResult:
-        """Verify PSTN ownership through Twilio's IncomingPhoneNumbers list."""
+        """Verify PSTN ownership through IncomingPhoneNumbers or OutgoingCallerIds."""
         normalized = normalize_telephony_address(address)
         if normalized.address_type != "pstn":
             return ProviderSyncResult(ok=True)
@@ -509,7 +516,7 @@ class TwilioProvider(TelephonyProvider):
                 f"Twilio phone-number lookup failed: {e}"
             ) from e
 
-        if sid:
+        if sid or await self._is_verified_caller_id(normalized.canonical):
             return ProviderSyncResult(ok=True)
         return ProviderSyncResult(
             ok=False,
@@ -539,6 +546,30 @@ class TwilioProvider(TelephonyProvider):
             if number.get("phone_number") == e164:
                 return number.get("sid")
         return None
+
+    async def _is_verified_caller_id(self, e164: str) -> bool:
+        """Return True if ``e164`` is a Verified Outgoing Caller ID on the account.
+
+        Fails closed: any HTTP or network error is treated as not verified.
+        """
+        endpoint = f"{self.base_url}/OutgoingCallerIds.json"
+        params = {"PhoneNumber": e164}
+        try:
+            async with aiohttp.ClientSession() as session:
+                auth = aiohttp.BasicAuth(self.account_sid, self.auth_token)
+                async with session.get(endpoint, params=params, auth=auth) as response:
+                    if response.status != 200:
+                        body = await response.text()
+                        logger.warning(
+                            f"Twilio OutgoingCallerIds lookup failed for {e164}: "
+                            f"{response.status} {body}"
+                        )
+                        return False
+                    data = await response.json()
+        except Exception as e:
+            logger.warning(f"Twilio OutgoingCallerIds lookup failed for {e164}: {e}")
+            return False
+        return bool(data.get("outgoing_caller_ids"))
 
     async def start_inbound_stream(
         self,
